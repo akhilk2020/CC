@@ -1,0 +1,89 @@
+
+trigger: none
+pr:
+- main
+
+pool:
+    vmImage: ubuntu-latest
+
+steps:
+
+- script: |
+    echo Build.Repository.LocalPath : $(Build.Repository.LocalPath)
+    echo Build.SourcesDirectory: $(Build.SourcesDirectory)
+    echo Build.Repository.LocalPath content : 
+    ls -lrt $(Build.Repository.LocalPath)/
+    echo Build.SourcesDirectory content : 
+    ls -lrt $(Build.SourcesDirectory)/
+    echo Current Direcroty:
+    pwd
+    echo 'Current OS Details:'
+    cat /etc/os-release
+  displayName: 'Print predefined variables'
+
+- task: chef-software.chef-azdo.install.component@3
+  inputs:
+    component: 'chef-workstation'
+    sudo: true
+    version: '21.7.524'
+  displayName: 'Installing chef workstation'
+  
+- script: 
+    chef -v
+  displayName: 'Verify chef workstation installtion and version'
+
+- script: 
+    docker --version
+  displayName: 'Verify docker installtion and version'
+- task: chef-software.chef-azdo.execute.component@3
+  inputs:
+    component: 'chef'
+    arguments: 'env --chef-license accept'
+  displayName: 'Setting chef license accept env setting'
+  
+# Cookbook validation
+# Version check
+- bash: |
+    # Define a function that returns true if cookbook version passed as argument 1
+    # is greater than or equal to the cookbook version passed as argument 2
+    semver_gte() {
+      [ "$1" == "$( echo -e "$1\n$2" | sort -rV | head -n1 )" ]
+    }
+    # Grab the version strings from the main and current branches
+    main_version=$( git show origin/main:metadata.rb | grep "^version" | tr '"' "'" | cut -f2 -d\' )
+    branch_version=$( grep "^version" metadata.rb | tr '"' "'" | cut -f2 -d\' )
+    echo 'Feature branch cookbook version:' $branch_version
+    echo 'Main branch cookbook version:' $main_version
+    if semver_gte "$main_version" "$branch_version"; then
+      echo 'ERROR: Cookbook version must be greater than the version in the main branch'
+      exit 1
+    fi
+  displayName: 'Cookbook version check' 
+
+# Lint check
+- script: cookstyle
+  displayName: 'Cookbook Lint check'
+
+# Kitchen test
+- task: chef-software.chef-azdo.execute.component@3
+  inputs:
+    component: 'kitchen'
+    arguments: 'test -c -d always'
+  displayName: 'Running kitchen'
+
+- script: chef install tomcat_policy.rb
+  displayName: 'Generate Policy lock file'
+
+- script: tar czf /$(Agent.TempDirectory)/cookbook.tgz .
+  displayName: 'Create cookbook archive'
+- task: CopyFiles@2
+  inputs:
+    SourceFolder: '$(Agent.TempDirectory)'
+    Contents: 'cookbook.tgz'
+    TargetFolder: '$(build.artifactstagingdirectory)'
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'cookbook'
+    publishLocation: 'Container'
+  displayName: 'Publish pipeline artifcat'
